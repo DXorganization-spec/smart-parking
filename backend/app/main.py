@@ -4,6 +4,8 @@ from sqlalchemy import text
 from backend.app.database.connection import engine
 from backend.app.api.parking import router as parking_router
 from backend.app.api.vehicles import router as vehicle_router
+from backend.app.api.occupancy import router as occupancy_router
+from backend.app.api.allocation import router as allocation_router
 
 app = FastAPI(
     title="Smart Parking Management System",
@@ -12,7 +14,8 @@ app = FastAPI(
 )
 app.include_router(parking_router)
 app.include_router(vehicle_router)
-
+app.include_router(occupancy_router)
+app.include_router(allocation_router)
 
 @app.get("/")
 def root():
