@@ -4,7 +4,11 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from geoalchemy2 import Geometry
 
 from backend.app.database.connection import Base
-
+from sqlalchemy import (
+    Boolean, Integer, String, ForeignKey,
+    DateTime, func
+)
+from datetime import datetime
 
 class Vehicle(Base):
     __tablename__ = "vehicles"
@@ -115,4 +119,40 @@ class ParkingSlot(Base):
 
     zone: Mapped["ParkingZone"] = relationship(
         back_populates="slots"
+    )
+
+class Allocation(Base):
+    __tablename__ = "allocations"
+
+    id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, index=True
+    )
+
+    vehicle_id: Mapped[int] = mapped_column(
+        ForeignKey("vehicles.id"),
+        nullable=False,
+        index=True
+    )
+
+    slot_id: Mapped[int] = mapped_column(
+        ForeignKey("parking_slots.id"),
+        nullable=False,
+        index=True
+    )
+
+    allocated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False
+    )
+
+    released_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True
+    )
+
+    status: Mapped[str] = mapped_column(
+        String(20),
+        default="active",
+        nullable=False
     )
