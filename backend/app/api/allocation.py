@@ -6,6 +6,13 @@ from backend.app.schemas.allocation import AllocationRequest
 from backend.app.services.allocation_engine import allocate_parking_slot
 from backend.app.services.allocation_engine import release_parking_slot
 
+from backend.app.services.allocation_history_service import (
+    get_allocation_history,
+    get_active_allocations,
+    get_released_allocations,
+    get_vehicle_allocation_history
+)
+
 router = APIRouter(
     prefix="/allocation",
     tags=["Dynamic Parking Allocation"]
@@ -44,3 +51,31 @@ def release_parking(
         )
 
     return result
+
+@router.get("/history")
+def allocation_history(
+    db: Session = Depends(get_db)
+):
+    return get_allocation_history(db)
+
+
+@router.get("/active")
+def active_allocations(
+    db: Session = Depends(get_db)
+):
+    return get_active_allocations(db)
+
+
+@router.get("/released")
+def released_allocations(
+    db: Session = Depends(get_db)
+):
+    return get_released_allocations(db)
+
+
+@router.get("/vehicle/{vehicle_id}/history")
+def vehicle_allocation_history(
+    vehicle_id: int,
+    db: Session = Depends(get_db)
+):
+    return get_vehicle_allocation_history(db, vehicle_id)
