@@ -10,6 +10,7 @@ from backend.app.schemas.vehicle import (
     VehicleUpdate,
     VehicleResponse
 )
+from backend.app.services.allocation_engine import allocate_parking_slot
 
 router = APIRouter(
     prefix="/vehicles",
@@ -117,9 +118,10 @@ def identify_rfid(
     request: RFIDRequest,
     db: Session = Depends(get_db)
 ):
+    # Step 1: Identify vehicle using RFID
     result = identify_vehicle_by_rfid(
         db,
-        request.rfid_uid
+        request.rfid_uid.strip()
     )
 
     if not result["success"]:
@@ -128,4 +130,24 @@ def identify_rfid(
             detail=result["message"]
         )
 
-    return result
+    # Step 2: Automatically allocate parking
+    vehicle_id = result["vehicle"]["id"]
+
+    allocation_result = allocate_parking_slot(
+        db,
+        vehicle_id
+    )
+
+    if not allocation_result["success"]:
+        raise HTTPException(
+            status_code=409,
+            detail=allocation_result["message"]
+        )
+
+    # Step 3: Return combined response
+    return {
+        "success": True,
+        "message": "Vehicle identified and parking allocated successfully",
+        "vehicle": result["vehicle"],
+        "allocation": allocation_result["allocation"]
+    }
