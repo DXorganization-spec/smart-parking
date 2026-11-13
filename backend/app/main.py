@@ -7,6 +7,7 @@ from backend.app.api.vehicles import router as vehicle_router
 from backend.app.api.occupancy import router as occupancy_router
 from backend.app.api.allocation import router as allocation_router
 from backend.app.api.analytics import router as analytics_router
+from backend.app.api.detection import router as detection_router
 
 app = FastAPI(
     title="Smart Parking Management System",
@@ -18,6 +19,7 @@ app.include_router(vehicle_router)
 app.include_router(occupancy_router)
 app.include_router(allocation_router)
 app.include_router(analytics_router)
+app.include_router(detection_router)
 
 @app.get("/")
 def root():
