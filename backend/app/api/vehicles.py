@@ -113,41 +113,60 @@ class RFIDRequest(BaseModel):
     rfid_uid: str = Field(min_length=1, max_length=100)
 
 
+
 @router.post("/identify-rfid")
 def identify_rfid(
     request: RFIDRequest,
     db: Session = Depends(get_db)
 ):
-    # Step 1: Identify vehicle using RFID
-    result = identify_vehicle_by_rfid(
-        db,
-        request.rfid_uid.strip()
-    )
-
-    if not result["success"]:
-        raise HTTPException(
-            status_code=404,
-            detail=result["message"]
+    try:
+        # Step 1: Identify vehicle using RFID.
+        result = identify_vehicle_by_rfid(
+            db,
+            request.rfid_uid.strip()
         )
 
-    # Step 2: Automatically allocate parking
-    vehicle_id = result["vehicle"]["id"]
+        if not result["success"]:
+            raise HTTPException(
+                status_code=404,
+                detail=result["message"]
+            )
 
-    allocation_result = allocate_parking_slot(
-        db,
-        vehicle_id
-    )
+        # Step 2: Allocate parking.
+        vehicle_id = result["vehicle"]["id"]
 
-    if not allocation_result["success"]:
+        allocation_result = allocate_parking_slot(
+            db,
+            vehicle_id
+        )
+
+        if not allocation_result["success"]:
+            raise HTTPException(
+                status_code=409,
+                detail=allocation_result["message"]
+            )
+
+        # Step 3: Commit the complete transaction.
+        db.commit()
+
+        return {
+            "success": True,
+            "message": "Vehicle identified and parking allocated successfully",
+            "vehicle": result["vehicle"],
+            "allocation": allocation_result["allocation"]
+        }
+
+    except IntegrityError:
+        db.rollback()
         raise HTTPException(
             status_code=409,
-            detail=allocation_result["message"]
+            detail="Concurrent allocation conflict. Please retry."
         )
 
-    # Step 3: Return combined response
-    return {
-        "success": True,
-        "message": "Vehicle identified and parking allocated successfully",
-        "vehicle": result["vehicle"],
-        "allocation": allocation_result["allocation"]
-    }
+    except HTTPException:
+        db.rollback()
+        raise
+
+    except Exception:
+        db.rollback()
+        raise
