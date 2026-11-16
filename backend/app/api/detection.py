@@ -7,7 +7,7 @@ from backend.app.services.vehicle_detection import detect_vehicles
 from tempfile import NamedTemporaryFile
 from backend.app.services.video_detection import detect_vehicles_in_video
 from backend.app.services.vehicle_tracking import track_vehicles_in_video
-from fastapi import Depends, Form
+from fastapi import Depends
 from sqlalchemy.orm import Session
 
 from backend.app.database.connection import get_db
@@ -187,64 +187,97 @@ async def track_vehicle_video(file: UploadFile = File(...)):
             Path(temp_path).unlink()
 
         await file.close()
+
 @router.post("/zone-a/video")
 async def detect_zone_a_video(
     file: UploadFile = File(...),
-    slot_rois: str = Form(...),
     db: Session = Depends(get_db)
 ):
-    import json
+    suffix = Path(file.filename or "").suffix.lower()
+
+    if suffix not in {".mp4", ".avi", ".mov", ".mkv"}:
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported video format."
+        )
+
+    content = await file.read()
+
+    if not content:
+        raise HTTPException(
+            status_code=400,
+            detail="Uploaded video is empty."
+        )
+
+    if len(content) > 100 * 1024 * 1024:
+        raise HTTPException(
+            status_code=413,
+            detail="Video size must not exceed 100 MB."
+        )
+
+    temp_path = None
 
     try:
-        rois = json.loads(slot_rois)
-        normalized_rois = {
-            name: tuple(coords)
-            for name, coords in rois.items()
-        }
-
-        for roi in normalized_rois.values():
-            if len(roi) != 4:
-                raise ValueError("Each ROI needs four coordinates.")
-
-        suffix = Path(file.filename).suffix.lower()
-
-        if suffix not in {".mp4", ".avi", ".mov", ".mkv"}:
-            raise HTTPException(status_code=400, detail="Unsupported video format")
-
-        with NamedTemporaryFile(delete=False, suffix=suffix) as temp:
-            temp.write(await file.read())
+        with NamedTemporaryFile(
+            delete=False,
+            suffix=suffix
+        ) as temp:
+            temp.write(content)
             temp_path = temp.name
 
-        try:
-            return process_zone_a_video(
-                db,
-                temp_path,
-                normalized_rois
-            )
-        finally:
-            Path(temp_path).unlink(missing_ok=True)
+        return process_zone_a_video(
+            db,
+            temp_path,
+            ZONE_A_ROIS
+        )
 
-    except (ValueError, TypeError, json.JSONDecodeError) as exc:
+    except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+    finally:
+        if temp_path and Path(temp_path).exists():
+            Path(temp_path).unlink()
+
+        await file.close()
+
 
 @router.post("/zone-a/image")
 async def detect_zone_a_image(
     file: UploadFile = File(...),
     db: Session = Depends(get_db)
 ):
-    suffix = Path(file.filename).suffix.lower()
+    suffix = Path(file.filename or "").suffix.lower()
 
     if suffix not in ALLOWED_EXTENSIONS:
         raise HTTPException(
             status_code=400,
-            detail="Unsupported image format"
+            detail="Unsupported image format."
         )
 
-    with NamedTemporaryFile(delete=False, suffix=suffix) as temp:
-        temp.write(await file.read())
-        temp_path = temp.name
+    content = await file.read()
+
+    if not content:
+        raise HTTPException(
+            status_code=400,
+            detail="Uploaded image is empty."
+        )
+
+    if len(content) > 10 * 1024 * 1024:
+        raise HTTPException(
+            status_code=413,
+            detail="Image size must not exceed 10 MB."
+        )
+
+    temp_path = None
 
     try:
+        with NamedTemporaryFile(
+            delete=False,
+            suffix=suffix
+        ) as temp:
+            temp.write(content)
+            temp_path = temp.name
+
         result = detect_vehicles(temp_path)
 
         occupancy = update_zone_a_occupancy(
@@ -258,6 +291,9 @@ async def detect_zone_a_image(
             "detection": result,
             "occupancy": occupancy
         }
-    finally:
-        Path(temp_path).unlink(missing_ok=True)
 
+    finally:
+        if temp_path and Path(temp_path).exists():
+            Path(temp_path).unlink()
+
+        await file.close()
