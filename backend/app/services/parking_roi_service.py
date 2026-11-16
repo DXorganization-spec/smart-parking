@@ -1,4 +1,10 @@
 
+import json
+from datetime import datetime, timezone
+from pathlib import Path
+
+import cv2
+import numpy as np
 from sqlalchemy.orm import Session
 
 from backend.app.database.models import ParkingSlot
@@ -6,58 +12,94 @@ from backend.app.database.models import ParkingSlot
 
 ZONE_A_ID = 2
 CONFIDENCE_THRESHOLD = 0.35
-ZONE_A_ROIS = {
-    "A01": (0, 0, 352, 192),
-    "A02": (352, 0, 704, 192),
-    "A03": (704, 0, 1056, 192),
-    "A04": (1056, 0, 1408, 192),
 
-    "A05": (0, 192, 352, 384),
-    "A06": (352, 192, 704, 384),
-    "A07": (704, 192, 1056, 384),
-    "A08": (1056, 192, 1408, 384),
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+ROI_CONFIG_PATH = PROJECT_ROOT / "zone_a_rois.json"
 
-    "A09": (0, 384, 352, 576),
-    "A10": (352, 384, 704, 576),
-    "A11": (704, 384, 1056, 576),
-    "A12": (1056, 384, 1408, 576),
 
-    "A13": (0, 576, 352, 768),
-    "A14": (352, 576, 704, 768),
-    "A15": (704, 576, 1056, 768),
-    "A16": (1056, 576, 1408, 768),
-}
+def load_zone_a_rois():
+    """Load and validate Zone A polygon coordinates."""
+
+    if not ROI_CONFIG_PATH.exists():
+        raise FileNotFoundError(
+            f"Zone A ROI configuration not found: {ROI_CONFIG_PATH}"
+        )
+
+    with ROI_CONFIG_PATH.open("r", encoding="utf-8") as file:
+        config = json.load(file)
+
+    if config.get("image_width") != 1366 or config.get("image_height") != 768:
+        raise ValueError("Unexpected Zone A reference image dimensions.")
+
+    slots = config.get("slots", {})
+    expected_slots = {f"A{i:02d}" for i in range(1, 17)}
+
+    if set(slots) != expected_slots:
+        raise ValueError("ROI configuration must contain exactly A01-A16.")
+
+    validated = {}
+
+    for name, points in slots.items():
+        polygon = np.asarray(points, dtype=np.float32)
+
+        if polygon.shape != (4, 2):
+            raise ValueError(f"{name} must contain four 2D points.")
+
+        if not np.isfinite(polygon).all():
+            raise ValueError(f"{name} contains invalid coordinates.")
+
+        if (
+            (polygon[:, 0] < 0).any()
+            or (polygon[:, 0] >= 1366).any()
+            or (polygon[:, 1] < 0).any()
+            or (polygon[:, 1] >= 768).any()
+        ):
+            raise ValueError(f"{name} contains out-of-image coordinates.")
+
+        if abs(cv2.contourArea(polygon)) < 1:
+            raise ValueError(f"{name} has an invalid polygon area.")
+
+        validated[name] = polygon.astype(np.int32)
+
+    return validated
+
+
+ZONE_A_ROIS = load_zone_a_rois()
 
 
 def point_inside_roi(x, y, roi):
+    """Check whether a point is inside or on a polygon boundary."""
+
+    polygon = np.asarray(roi, dtype=np.float32)
+
+    return cv2.pointPolygonTest(
+        polygon,
+        (float(x), float(y)),
+        False
+    ) >= 0
+
+
+def update_zone_a_occupancy(
+    db: Session,
+    detections: list,
+    slot_rois: dict = None
+):
     """
-    Check whether a point is inside a parking-slot ROI.
+    Update Zone A occupancy using positive motorcycle detections.
 
-    ROI format: (x1, y1, x2, y2)
+    A positive detection confirms occupancy.
+    A missing detection does not prove availability, so unmatched
+    slots are marked unknown.
     """
-    x1, y1, x2, y2 = roi
 
-    return x1 <= x <= x2 and y1 <= y <= y2
-
-
-def update_zone_a_occupancy(db: Session, detections: list, slot_rois: dict):
-    """
-    Match motorcycle detections against Zone A parking-slot ROIs
-    and update occupancy in the database.
-
-    slot_rois example:
-    {
-        "A01": (100, 100, 200, 250),
-        "A02": (210, 100, 310, 250)
-    }
-    """
+    slot_rois = slot_rois if slot_rois is not None else ZONE_A_ROIS
 
     slots = (
         db.query(ParkingSlot)
         .filter(
             ParkingSlot.zone_id == ZONE_A_ID,
             ParkingSlot.vehicle_type == "motorcycle",
-            ParkingSlot.is_active == True
+            ParkingSlot.is_active.is_(True)
         )
         .all()
     )
@@ -68,50 +110,80 @@ def update_zone_a_occupancy(db: Session, detections: list, slot_rois: dict):
         if detection.get("vehicle_type") != "motorcycle":
             continue
 
-        confidence = detection.get("confidence", 0)
+        try:
+            confidence = float(detection.get("confidence", 0))
+        except (TypeError, ValueError):
+            continue
 
-        if confidence < CONFIDENCE_THRESHOLD:
+        if not np.isfinite(confidence) or confidence < CONFIDENCE_THRESHOLD:
             continue
 
         bbox = detection.get("bounding_box")
 
-        if not bbox or len(bbox) != 4:
+        if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
             continue
 
-        x1, y1, x2, y2 = bbox
+        try:
+            x1, y1, x2, y2 = map(float, bbox)
+        except (TypeError, ValueError):
+            continue
 
-        # Use the bottom-center of the bounding box
-        # as an approximate vehicle-ground contact point.
+        if not np.isfinite([x1, y1, x2, y2]).all():
+            continue
+
+        if x2 <= x1 or y2 <= y1:
+            continue
+
         center_x = (x1 + x2) / 2
         bottom_y = y2
 
-        for slot_number, roi in slot_rois.items():
-            if point_inside_roi(center_x, bottom_y, roi):
+        for slot_number, polygon in slot_rois.items():
+            if point_inside_roi(center_x, bottom_y, polygon):
                 detected_slots.add(slot_number)
 
     updated_slots = []
+    now = datetime.now(timezone.utc)
 
     for slot in slots:
         if slot.slot_number not in slot_rois:
             continue
 
-        slot.is_occupied = slot.slot_number in detected_slots
+        if slot.slot_number in detected_slots:
+            slot.is_occupied = True
+            slot.occupancy_status = "occupied"
+            slot.last_detected_at = now
+        else:
+            slot.is_occupied = False
+            slot.occupancy_status = "unknown"
 
         updated_slots.append({
             "slot_id": slot.id,
             "slot_number": slot.slot_number,
             "is_occupied": slot.is_occupied,
-            "status": "occupied" if slot.is_occupied else "available"
+            "occupancy_status": slot.occupancy_status,
+            "last_detected_at": slot.last_detected_at,
+            "status": slot.occupancy_status
         })
 
     db.commit()
+
+    occupied_count = sum(
+        slot["occupancy_status"] == "occupied"
+        for slot in updated_slots
+    )
+
+    unknown_count = sum(
+        slot["occupancy_status"] == "unknown"
+        for slot in updated_slots
+    )
 
     return {
         "success": True,
         "zone_id": ZONE_A_ID,
         "vehicle_type": "motorcycle",
         "updated_slots": len(updated_slots),
-        "occupied_slots": len(detected_slots),
-        "available_slots": len(updated_slots) - len(detected_slots),
+        "occupied_slots": occupied_count,
+        "unknown_slots": unknown_count,
+        "available_slots": 0,
         "slots": updated_slots
     }
