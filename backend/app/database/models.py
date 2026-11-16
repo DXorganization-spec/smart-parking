@@ -108,6 +108,17 @@ class ParkingSlot(Base):
         Boolean, default=False, nullable=False
     )
 
+        occupancy_status: Mapped[str] = mapped_column(
+        String(20),
+        default="unknown",
+        nullable=False
+    )
+
+    last_detected_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True
+    )
+
     is_active: Mapped[bool] = mapped_column(
         Boolean, default=True, nullable=False
     )
