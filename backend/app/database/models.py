@@ -108,7 +108,7 @@ class ParkingSlot(Base):
         Boolean, default=False, nullable=False
     )
 
-        occupancy_status: Mapped[str] = mapped_column(
+    occupancy_status: Mapped[str] = mapped_column(
         String(20),
         default="unknown",
         nullable=False
