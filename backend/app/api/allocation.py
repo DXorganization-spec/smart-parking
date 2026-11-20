@@ -1,17 +1,19 @@
-from fastapi import APIRouter, Depends, HTTPException
+
+from fastapi import APIRouter, Depends, HTTPException, Path, status
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 
 from backend.app.database.connection import get_db
 from backend.app.schemas.allocation import AllocationRequest
-from backend.app.services.allocation_engine import allocate_parking_slot
-from backend.app.services.allocation_engine import release_parking_slot
-from sqlalchemy.exc import IntegrityError
-
+from backend.app.services.allocation_engine import (
+    allocate_parking_slot,
+    release_parking_slot,
+)
 from backend.app.services.allocation_history_service import (
     get_allocation_history,
     get_active_allocations,
     get_released_allocations,
-    get_vehicle_allocation_history
+    get_vehicle_allocation_history,
 )
 
 router = APIRouter(
@@ -19,6 +21,16 @@ router = APIRouter(
     tags=["Dynamic Parking Allocation"]
 )
 
+
+def get_allocation_error_status(message: str) -> int:
+    error_statuses = {
+        "Vehicle not found": status.HTTP_404_NOT_FOUND,
+        "Vehicle is inactive": status.HTTP_409_CONFLICT,
+        "Vehicle already has an active allocation": status.HTTP_409_CONFLICT,
+        "No verified compatible parking slot available": status.HTTP_409_CONFLICT,
+    }
+
+    return error_statuses.get(message, status.HTTP_409_CONFLICT)
 
 
 @router.post("/assign")
@@ -32,7 +44,7 @@ def assign_parking(
         if not result["success"]:
             db.rollback()
             raise HTTPException(
-                status_code=400,
+                status_code=get_allocation_error_status(result["message"]),
                 detail=result["message"]
             )
 
@@ -42,7 +54,7 @@ def assign_parking(
     except IntegrityError:
         db.rollback()
         raise HTTPException(
-            status_code=409,
+            status_code=status.HTTP_409_CONFLICT,
             detail="Concurrent allocation conflict. Please retry."
         )
 
@@ -53,7 +65,7 @@ def assign_parking(
 
 @router.post("/release/{vehicle_id}")
 def release_parking(
-    vehicle_id: int,
+    vehicle_id: int = Path(gt=0),
     db: Session = Depends(get_db)
 ):
     try:
@@ -62,7 +74,7 @@ def release_parking(
         if not result["success"]:
             db.rollback()
             raise HTTPException(
-                status_code=404,
+                status_code=status.HTTP_404_NOT_FOUND,
                 detail=result["message"]
             )
 
@@ -72,6 +84,7 @@ def release_parking(
     except Exception:
         db.rollback()
         raise
+
 
 @router.get("/history")
 def allocation_history(
@@ -96,7 +109,7 @@ def released_allocations(
 
 @router.get("/vehicle/{vehicle_id}/history")
 def vehicle_allocation_history(
-    vehicle_id: int,
+    vehicle_id: int = Path(gt=0),
     db: Session = Depends(get_db)
 ):
     return get_vehicle_allocation_history(db, vehicle_id)
